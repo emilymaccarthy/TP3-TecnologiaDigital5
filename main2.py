@@ -6,6 +6,58 @@ import seaborn as sns
 import tarfile
 import os
 import glob
+import os
+import gzip
+import shutil
+
+
+def uncompress_and_parse():
+    # Ruta del archivo tar
+    tar_path = 'ALL_atsp.tar'
+    extract_path = 'ALL_atsp_extracted/'
+
+    # Crear el directorio de extracción si no existe
+    os.makedirs(extract_path, exist_ok=True)
+
+    # Descomprimir el archivo tar
+    with tarfile.open(tar_path, "r") as tar:
+        tar.extractall(path=extract_path)
+        
+    # Obtener todos los archivos .atsp.gz en la carpeta extraída
+    file_paths = glob.glob(os.path.join(extract_path, '*.atsp.gz'))
+    
+    all_results_dfs = []
+    
+    # Procesar cada archivo .atsp.gz
+    for file_path in file_paths:
+        # Descomprimir el archivo .atsp.gz
+        with gzip.open(file_path, 'rb') as f_in:
+            # Crear el nombre de archivo de salida sin la extensión .gz
+            out_file_path = file_path[:-3]
+            with open(out_file_path, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        
+        # Parsear el archivo .atsp descomprimido para obtener la matriz de distancias
+        distance_matrix = parse_atsp_file(out_file_path)
+        
+        # Simular la ejecución del experimento y generar los resultados
+        experiment_results = run_experiment_on_single_matrix(distance_matrix)
+        
+        # Crear el DataFrame de resultados para este archivo
+        results_df = pd.DataFrame(experiment_results)
+        
+        # Agregar información adicional si es necesario
+        results_df['File'] = os.path.basename(file_path)
+        
+        # Guardar el DataFrame en la lista
+        all_results_dfs.append(results_df)
+        
+        # Eliminar el archivo comprimido .atsp.gz y el archivo .atsp después de leerlo
+        os.remove(file_path)
+        os.remove(out_file_path)
+    
+    return all_results_dfs
+
 
 # Funciones previamente definidas para las heurísticas y métodos
 def nearest_neighbor(distance_matrix):
@@ -99,21 +151,43 @@ def calculate_tour_cost(tour, distance_matrix):
     return cost
 
 def parse_atsp_file(file_path):
-    with open(file_path, 'r') as file:
-        lines = file.readlines()
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+        
+        # Encontrar la dimensión de la matriz
+        dimension = None
+        for line in lines:
+            if line.startswith('DIMENSION'):
+                dimension = int(line.split(':')[1].strip())
+                break
+        
+        if dimension is None:
+            raise ValueError("No se pudo encontrar la dimensión de la matriz en el archivo.")
+        
+        # Encontrar la sección de la matriz de distancias
+        found_section = False
+        distance_matrix = []
+        for line in lines:
+            if found_section and not line.strip().startswith('EOF'):
+                # Procesar las líneas de la matriz de distancias hasta 'EOF'
+                row = list(map(int, line.split()))
+                distance_matrix.append(row)
+            elif line.startswith('EDGE_WEIGHT_SECTION'):
+                found_section = True
+            elif found_section and line.strip().startswith('EOF'):
+                # Terminar la lectura al encontrar 'EOF'
+                break
+        
+        if not found_section:
+            raise ValueError("No se encontró la sección EDGE_WEIGHT_SECTION en el archivo.")
+        
+        # Verificar si se leyó correctamente toda la matriz
+        if len(distance_matrix) != dimension:
+            raise ValueError("La matriz de distancias leída no coincide con la dimensión especificada."
+                             f"Se esperaba una dimensión de {dimension}, pero se leyeron {len(distance_matrix)} filas.")
+        
+        return distance_matrix
 
-    # Encontrar la sección de la matriz de distancias
-    edge_weight_section_index = lines.index("EDGE_WEIGHT_SECTION\n") + 1
-    dimension = int([line.split(":")[1].strip() for line in lines if "DIMENSION" in line][0])
-    
-    # Leer la matriz de distancias
-    matrix_lines = lines[edge_weight_section_index:edge_weight_section_index + dimension]
-    matrix = []
-    for line in matrix_lines:
-        row = list(map(int, line.split()))
-        matrix.append(row)
-
-    return np.array(matrix)
 
 # Función para ejecutar los experimentos y recolectar resultados
 def run_experiment(distance_matrices):
@@ -164,22 +238,23 @@ def run_experiment_on_single_matrix(distance_matrix):
 
 # Función principal para experimentar
 def main():
-    # Ruta del archivo tar
-    tar_path = 'ALL_atsp.tar'
-    extract_path = 'ALL_atsp_extracted/'
+    # # Ruta del archivo tar
+    # tar_path = 'ALL_atsp.tar'
+    # extract_path = 'ALL_atsp_extracted/'
 
-    # Crear el directorio de extracción si no existe
-    os.makedirs(extract_path, exist_ok=True)
+    # # # Crear el directorio de extracción si no existe
+    # # os.makedirs(extract_path, exist_ok=True)
 
-    # Descomprimir el archivo tar
-    with tarfile.open(tar_path, "r") as tar:
-        tar.extractall(path=extract_path)
+    # # # Descomprimir el archivo tar
+    # # with tarfile.open(tar_path, "r") as tar:
+    # #     tar.extractall(path=extract_path)
         
-    # Obtener todos los archivos .atsp en la carpeta extraída
-    file_paths = glob.glob(os.path.join(extract_path, '*.atsp'))
+    # # Obtener todos los archivos .atsp en la carpeta extraída
+    # file_paths = glob.glob(os.path.join(extract_path, '*.atsp'))
 
-    # Leer las matrices de distancias de todos los archivos
-    distance_matrices = [parse_atsp_file(file_path) for file_path in file_paths]
+    # # Leer las matrices de distancias de todos los archivos
+    # distance_matrices = [parse_atsp_file(file_path) for file_path in file_paths]
+    
     # Función para generar una matriz de distancia asimétrica aleatoria
     def generate_random_distance_matrix(n, max_distance=100):
         matrix = np.random.randint(1, max_distance, size=(n, n))
@@ -217,20 +292,15 @@ def main():
     plt.tight_layout()
     plt.show()
     
+    # Llamar a la función para descomprimir y parsear los archivos
+    distance_matrices = uncompress_and_parse()
+    
     # Ejecutar los experimentos en todas las matrices de distancias cargadas
     all_experiment_results = []
     for distance_matrix in distance_matrices:
         results = run_experiment_on_single_matrix(distance_matrix)
         all_experiment_results.extend(results)
-    # # Ejemplo de uso con el archivo proporcionado
-    # file_path = '/mnt/data/ALL_atsp/br17.atsp'  # Actualiza con la ruta correcta
-    # distance_matrix = parse_atsp_file(file_path)
-    
-    # experiment_results = run_experiment_on_single_matrix(distance_matrix)
-    # print(experiment_results)
-    
-    # # Convertir los resultados a un DataFrame para la visualización
-    # results_df = pd.DataFrame(experiment_results)
+
     
     results_df = pd.DataFrame(all_experiment_results)
     # Visualización
